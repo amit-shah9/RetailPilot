@@ -1,133 +1,142 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import joblib
 import os
-from datetime import datetime
 
-# -------------------------------
-# 💅 Page layout and config
-# -------------------------------
-st.set_page_config(page_title="Retail Sales Predictor", layout="wide")
-st.markdown("<h1 style='color:#00B8E4'>🛍️ Retail Sales Predictor</h1>", unsafe_allow_html=True)
-st.caption("Use this app to predict **daily sales** for a specific store and product family using past trends, promotions, and seasonality.")
+# 🖼 Page config MUST be first Streamlit call
+st.set_page_config(page_title="Retail Sales Forecast", layout="wide")
 
-# -------------------------------
-# 📦 Load model and data
-# -------------------------------
-model_path = os.path.join("model", "sales_model.pkl")
-data_path = os.path.join("data", "processed", "retail_processed.csv")
+# 📁 Paths
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_PATH = os.path.join(BASE_DIR, 'data', 'processed', 'retail_processed.csv')
+MODEL_PATH = os.path.join(BASE_DIR, 'model', 'catboost_model.pkl')
 
-model = joblib.load(model_path)
-data = pd.read_csv(data_path)
+# 🚀 Load model + data
+@st.cache_resource
+def load_model():
+    return joblib.load(MODEL_PATH)
 
-# -------------------------------
-# 🧼 Clean and prepare data
-# -------------------------------
-data['date'] = pd.to_datetime(data['date'])
-data['family'] = data['family'].astype('category')
-data['holiday_type'] = data['holiday_type'].astype('category')
+@st.cache_data
+def load_data():
+    return pd.read_csv(DATA_PATH)
 
-# Create encoders
-family_map = {cat: code for code, cat in enumerate(data['family'].cat.categories)}
-holiday_map = {cat: code for code, cat in enumerate(data['holiday_type'].cat.categories)}
-family_rev = {v: k for k, v in family_map.items()}
+model = load_model()
+data = load_data()
 
-# Extract time features
-data['dayofweek'] = data['date'].dt.dayofweek
-data['month'] = data['date'].dt.month
-data['year'] = data['date'].dt.year
+# 🌟 Title + intro
+st.title("🛍️ Retail Sales Forecasting App")
+st.markdown("""
+Welcome!  
+This app uses a machine learning model trained on real retail data to **forecast daily sales** for a given product and store.  
+We take into account past sales, promotions, oil prices, and seasonal trends to help guide predictions.
+""")
 
-# -------------------------------
-# 🧠 Sidebar filters
-# -------------------------------
-st.sidebar.header("📊 Filters")
+# 📊 Extract dropdown values
+stores = sorted(data['store_nbr'].unique())
+families = sorted(data['family'].unique())
+years = sorted(data['year'].unique())
+months = sorted(data['month'].unique())
 
-# Year filter
-year_filter = st.sidebar.multiselect(
-    "Filter by Year", options=sorted(data['year'].unique()), default=sorted(data['year'].unique())
-)
-data = data[data['year'].isin(year_filter)]
+# 📥 User inputs
+with st.sidebar:
+    st.header("🔧 Prediction Settings")
+    store = st.selectbox("Store Number", stores)
+    family = st.selectbox("Product Family", families)
+    year = st.selectbox("Year", years)
+    month = st.selectbox("Month", months)
+    dayofweek = st.slider("Day of Week (0 = Monday)", 0, 6)
+    onpromotion = st.checkbox("Is this product on promotion?", value=False)
 
-# Month filter
-month_filter = st.sidebar.multiselect(
-    "Filter by Month", options=list(range(1, 13)), default=list(range(1, 13))
-)
-data = data[data['month'].isin(month_filter)]
+    # 📈 Oil price slider with helper text
+    avg_oil = float(data['dcoilwtico'].mean())
+    min_oil = float(data['dcoilwtico'].min())
+    max_oil = float(data['dcoilwtico'].max())
 
-# -------------------------------
-# 🧾 User input section
-# -------------------------------
-st.sidebar.header("🧾 Prediction Inputs")
+    dcoilwtico = st.slider(
+        "🛢️ Oil Price (WTI - USD/barrel)",
+        min_value=round(min_oil, 2),
+        max_value=round(max_oil, 2),
+        value=round(avg_oil, 2),
+        help="Oil price influences economy-wide demand. Typical range: $30–100. Default is dataset average."
+    )
 
-# Store selector
-store = st.sidebar.selectbox("Select Store", sorted(data['store_nbr'].unique()))
+# 📘 Info note
+st.markdown("🔍 Based on your selections, we pull historical sales trends to improve the prediction.")
 
-# Filter available families for selected store
-available_families = data[data['store_nbr'] == store]['family'].unique()
-available_family_names = [cat for cat in data['family'].cat.categories if cat in available_families]
+# 🧠 Estimate lag/rolling features from similar past records
+filtered = data[
+    (data['store_nbr'] == store) &
+    (data['family'] == family) &
+    (data['year'] == year) &
+    (data['month'] == month) &
+    (data['dayofweek'] == dayofweek)
+]
 
-if not available_family_names:
-    st.sidebar.warning("⚠️ No product families available for this store.")
-    st.stop()
+if not filtered.empty:
+    lag_7 = float(filtered['lag_7'].mean())
+    lag_14 = float(filtered['lag_14'].mean())
+    rolling_mean_7 = float(filtered['rolling_mean_7'].mean())
+    promo_last_week = int(filtered['promo_last_week'].mean())
+    st.success("✅ Historical patterns loaded successfully.")
+else:
+    recent = data[(data['store_nbr'] == store) & (data['family'] == family)].sort_values('date', ascending=False)
 
-# Product family selector
-family_label = st.sidebar.selectbox("Select Product Family", sorted(available_family_names))
+    if not recent.empty:
+        st.warning("⚠️ No exact historical match. Using most recent sales info for this store/product.")
+        lag_7 = float(recent.iloc[0]['lag_7'])
+        lag_14 = float(recent.iloc[0]['lag_14'])
+        rolling_mean_7 = float(recent.iloc[0]['rolling_mean_7'])
+        promo_last_week = int(recent.iloc[0]['promo_last_week'])
+    else:
+        st.warning("⚠️ No historical data at all for this store/family. Using global averages.")
+        lag_7 = lag_14 = rolling_mean_7 = data['sales'].mean()
+        promo_last_week = 0
 
-# Promotion
-on_promo = st.sidebar.checkbox("On Promotion?", value=False)
 
-# Prediction date
-date = st.sidebar.date_input("Prediction Date", value=datetime(2016, 8, 1))
-
-# -------------------------------
-# 🧮 Prepare input data for model
-# -------------------------------
-dayofweek = date.weekday()
-month = date.month
-year = date.year
-oil_price = data['dcoilwtico'].ffill().iloc[-1]
-
-input_data = pd.DataFrame([{
-    'store_nbr': store,
-    'family': family_map[family_label],
-    'dcoilwtico': oil_price,
-    'onpromotion': int(on_promo),
+# 📦 Build input DataFrame for model
+input_df = pd.DataFrame([{
+    'store_nbr': str(store),
+    'family': str(family),
+    'onpromotion': int(onpromotion),
+    'dcoilwtico': dcoilwtico,
+    'holiday_type': 'None',
     'dayofweek': dayofweek,
     'month': month,
     'year': year,
-    'holiday_type': holiday_map.get('None', 0)
+    'lag_7': lag_7,
+    'lag_14': lag_14,
+    'rolling_mean_7': rolling_mean_7,
+    'promo_last_week': promo_last_week
 }])
 
-# -------------------------------
-# 📈 Prediction section
-# -------------------------------
-st.markdown("### 🔮 Predicted Sales (for a single day)")
-st.info("This number represents the **expected sales (in units)** for **one specific day**, based on the selected store, product family, date, and promotion status.")
+# 🧠 Prediction logic
+if st.button("📈 Predict Sales"):
+    prediction = model.predict(input_df)[0]
+    prediction = int(round(max(prediction, 0)))  # ensure non-negative
 
-# Show prediction
-prediction = model.predict(input_data)[0]
-col1, col2 = st.columns(2)
-col1.metric("Predicted Units", f"{prediction:.2f}")
-col2.markdown(f"""
-**Selected Inputs:**  
-- 🏬 Store: `{store}`  
-- 🏷️ Product Family: `{family_label}`  
-- 📅 Date: `{date.strftime('%Y-%m-%d')}`  
-- 🔖 Promotion: `{on_promo}`  
-""")
+    st.subheader("🔮 Predicted Sales")
+    st.success(f"🛒 Expected daily sales: **{prediction} units**")
+    st.caption("Prediction is for **one day**, based on selected date, past trends, and promotion settings.")
 
-# -------------------------------
-# 📊 Historical sales trend
-# -------------------------------
-st.markdown("---")
-st.markdown("### 📊 Historical Sales Trend")
-st.caption("Below is the **daily sales history** for the selected store and product family from the available data.")
+    with st.expander("📚 Learn how this was predicted"):
+        st.markdown("""
+        This ML model uses:
+        - Recent sales (lags)
+        - Weekly moving averages
+        - Promotion trends (current + past)
+        - Oil prices as an economic proxy
+        - Seasonality via month/year/day features
+        """)
 
-trend_data = data[(data['store_nbr'] == store) & (data['family'] == family_label)]
-
-if trend_data.empty:
-    st.warning("⚠️ No historical sales data found for this combination.")
+# 📈 Show historical sales trend
+st.markdown("### 📉 Past Sales Trends")
+history = data[(data['store_nbr'] == store) & (data['family'] == family)]
+if history.empty:
+    st.info("No past data available for this selection.")
 else:
-    trend_summary = trend_data.groupby('date')['sales'].sum().reset_index()
-    st.line_chart(trend_summary.set_index('date'))
-    st.caption(f"Showing {len(trend_data)} days of historical records.")
+    chart = history[['date', 'sales']].copy()
+    chart['date'] = pd.to_datetime(chart['date'])
+    chart.set_index('date', inplace=True)
+    st.line_chart(chart['sales'])
+    st.caption("Historical sales for the selected store and product family.")

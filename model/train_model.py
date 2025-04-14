@@ -1,66 +1,68 @@
 import pandas as pd
-from sklearn.linear_model import LinearRegression
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, r2_score
-from math import sqrt
-import joblib
+import numpy as np
 import os
+from catboost import CatBoostRegressor, Pool
+from sklearn.metrics import mean_squared_log_error
+import joblib
 
-# Set paths
+# 📁 Paths
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_PATH = os.path.join(BASE_DIR, 'data', 'processed', 'retail_processed.csv')
-MODEL_PATH = os.path.join(BASE_DIR, 'model', 'sales_model.pkl')
+MODEL_PATH = os.path.join(BASE_DIR, 'model', 'catboost_model.pkl')
 
-# Load the cleaned dataset
-data = pd.read_csv(DATA_PATH, low_memory=False)
-print("Columns in dataset:", data.columns.tolist())
+# 📥 Load data
+print("Loading processed data...")
+df = pd.read_csv(DATA_PATH)
 
-# Convert date column to datetime
-data['date'] = pd.to_datetime(data['date'])
+# 🔍 Feature engineering
+df['date'] = pd.to_datetime(df['date'])
+df['dayofweek'] = df['date'].dt.dayofweek
+df['month'] = df['date'].dt.month
+df['year'] = df['date'].dt.year
 
-# Extract date-based features
-data['dayofweek'] = data['date'].dt.dayofweek
-data['month'] = data['date'].dt.month
-data['year'] = data['date'].dt.year
+# 🧼 Fill NAs
+df['dcoilwtico'].fillna(method='ffill', inplace=True)
 
-# Fill missing oil prices using forward fill
-data['dcoilwtico'] = data['dcoilwtico'].ffill()
+# 🎯 Target
+y = df['sales']
 
-# Clean and convert 'onpromotion'
-data['onpromotion'] = data['onpromotion'].fillna(0).astype(int)
+# 🔣 Categorical features
+categorical = ['store_nbr', 'family', 'holiday_type']
+df[categorical] = df[categorical].astype(str)
 
-# Encode categorical columns
-data['holiday_type'] = data['holiday_type'].astype('category').cat.codes
-data['family'] = data['family'].astype('category').cat.codes
+# 🧪 Features
+features = ['store_nbr', 'family', 'onpromotion', 'dcoilwtico',
+            'holiday_type', 'dayofweek', 'month', 'year']
 
-# Define input features and target column
-features = ['store_nbr', 'family', 'dcoilwtico', 'onpromotion', 'dayofweek', 'month', 'year', 'holiday_type']
-target = 'sales'
+X = df[features]
 
-# Drop rows with missing values in feature columns (just in case)
-data = data.dropna(subset=features)
+# 🪄 CatBoost handles categorical internally
+cat_features_idx = [features.index(col) for col in categorical]
 
-# Split features and target
-X = data[features]
-y = data[target]
+# 🔁 Train-test split
+from sklearn.model_selection import train_test_split
+X_train, X_valid, y_train, y_valid = train_test_split(X, y, test_size=0.2, shuffle=True, random_state=42)
 
-# Split data into train and test sets
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+# 🧠 CatBoostRegressor
+model = CatBoostRegressor(
+    iterations=1000,
+    learning_rate=0.05,
+    depth=6,
+    cat_features=cat_features_idx,
+    loss_function='RMSE',
+    verbose=100
+)
 
-# Train a Linear Regression model
-model = LinearRegression()
-model.fit(X_train, y_train)
+# 🏋️‍♂️ Train
+print("Training CatBoost model...")
+model.fit(X_train, y_train, eval_set=(X_valid, y_valid), use_best_model=True)
 
-# Evaluate the model
-y_pred = model.predict(X_test)
-mse = mean_squared_error(y_test, y_pred)
-rmse = sqrt(mse)
-r2 = r2_score(y_test, y_pred)
+# 🧪 Evaluate
+y_pred = model.predict(X_valid)
+rmsle = np.sqrt(mean_squared_log_error(y_valid, np.maximum(y_pred, 0)))
 
-print("\nModel trained successfully.")
-print(f"RMSE: {rmse:.2f}")
-print(f"R² Score: {r2:.2f}")
+print(f"✅ RMSLE: {rmsle:.4f}")
 
-# Save the trained model
+# 💾 Save model
 joblib.dump(model, MODEL_PATH)
-print(f"Model saved to: {MODEL_PATH}")
+print("📦 Model saved to:", MODEL_PATH)
