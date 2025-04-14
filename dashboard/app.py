@@ -48,7 +48,6 @@ with st.sidebar:
     dayofweek = st.slider("Day of Week (0 = Monday)", 0, 6)
     onpromotion = st.checkbox("Is this product on promotion?", value=False)
 
-    # 📈 Oil price slider with helper text
     avg_oil = float(data['dcoilwtico'].mean())
     min_oil = float(data['dcoilwtico'].min())
     max_oil = float(data['dcoilwtico'].max())
@@ -58,8 +57,12 @@ with st.sidebar:
         min_value=round(min_oil, 2),
         max_value=round(max_oil, 2),
         value=round(avg_oil, 2),
-        help="Oil price influences economy-wide demand. Typical range: $30–100. Default is dataset average."
+        help="Oil price influences economy-wide demand."
     )
+
+    # 👇 Move button here
+    predict = st.button("📈 Predict Sales")
+
 
 # 📘 Info note
 st.markdown("🔍 Based on your selections, we pull historical sales trends to improve the prediction.")
@@ -111,7 +114,7 @@ input_df = pd.DataFrame([{
 }])
 
 # 🧠 Prediction logic
-if st.button("📈 Predict Sales"):
+if predict:
     prediction = model.predict(input_df)[0]
     prediction = int(round(max(prediction, 0)))  # ensure non-negative
 
